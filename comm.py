@@ -27,9 +27,8 @@ ACTION_LIST = ["read_comment", "like", "click_avatar",  "forward"]
 # ACTION_LIST = ["read_comment", "like", "click_avatar",  "forward", "comment", "follow", "favorite"]
 # 用于构造特征的字段列表
 FEA_COLUMN_LIST = ["read_comment", "like", "click_avatar",  "forward", "comment", "follow", "favorite"]
-# 每个行为的负样本下采样比例(下采样后负样本数/原负样本数)
-ACTION_SAMPLE_RATE = {"read_comment": 0.2, "like": 0.2, "click_avatar": 0.2, "forward": 0.1, "comment": 0.1, "follow": 0.1, "favorite": 0.1}
-
+# 负样本下采样比例(负样本:正样本)
+ACTION_SAMPLE_RATE = {"read_comment": 5, "like": 5, "click_avatar": 5, "forward": 10, "comment": 10, "follow": 10, "favorite": 10}
 # 各个阶段数据集的设置的最后一天
 STAGE_END_DAY = {"online_train": 14, "offline_train": 12, "evaluate": 13, "submit": 15}
 # 各个行为构造训练数据的天数
@@ -96,13 +95,13 @@ def statis_feature(start_day=1, before_day=7, agg='sum'):
         user_data = history_data[[dim, "date_"] + FEA_COLUMN_LIST]
         res_arr = []
         for start in range(start_day, END_DAY-before_day+1):
-            temp = user_data[((user_data["date_"]) >= start) & (user_data["date_"] < (start + before_day))]
+            temp = user_data[(user_data["date_"]) >= start & (user_data["date_"] < (start + before_day))]
             temp = temp.drop(columns=['date_'])
             temp = temp.groupby([dim]).agg([agg]).reset_index()
             temp.columns = list(map(''.join, temp.columns.values))
             temp["date_"] = start + before_day
             res_arr.append(temp)
-        dim_feature = pd.concat(res_arr)
+        dim_feature = pd.concat(res_arr) # 拼接在一起，是否可以计算其他的聚合值
         feature_path = os.path.join(feature_dir, dim+"_feature.csv")
         print('Save to: %s'%feature_path)
         dim_feature.to_csv(feature_path, index=False)
@@ -145,10 +144,9 @@ def generate_sample(stage="offline_train"):
         # 负样本下采样
         for action in ACTION_LIST:
             action_df = df[(df["date_"] <= day) & (df["date_"] >= day - ACTION_DAY_NUM[action] + 1)]
-            df_neg = action_df[action_df[action] == 0]
-            df_pos = action_df[action_df[action] == 1]
-            df_neg = df_neg.sample(frac=ACTION_SAMPLE_RATE[action], random_state=SEED, replace=False)
-            df_all = pd.concat([df_neg, df_pos])
+            df_neg = action_df[action_df[action] == 0] # 取出负样本
+            df_neg = df_neg.sample(frac=1.0/ACTION_SAMPLE_RATE[action], random_state=SEED, replace=False) # 生成负样本
+            df_all = pd.concat([df_neg, action_df[action_df[action] == 1]])
             col = ["userid", "feedid", "date_", "device"] + [action]
             file_name = os.path.join(stage_dir, stage + "_" + action + "_" + str(day) + "_generate_sample.csv")
             print('Save to: %s'%file_name)
@@ -188,9 +186,10 @@ def concat_sample(sample_arr, stage="offline_train"):
             action = ACTION_LIST[index]
             features += [action]
         print("action: ", action)
-        sample = sample.join(feed_info, on="feedid", how="left", rsuffix="_feed")
-        sample = sample.join(feed_date_feature, on=["feedid", "date_"], how="left", rsuffix="_feed")
-        sample = sample.join(user_date_feature, on=["userid", "date_"], how="left", rsuffix="_user")
+        sample = sample.join(feed_info, on="feedid", how="left", rsuffix="_feed") # 合并feed的基本信息
+        sample = sample.join(feed_date_feature, on=["feedid", "date_"], how="left", rsuffix="_feed") # 合并用户行为中基于feed的聚合数据
+        sample = sample.join(user_date_feature, on=["userid", "date_"], how="left", rsuffix="_user") # 合并用户行为中基于userid的聚合数据
+        
         feed_feature_col = [b+"sum" for b in FEA_COLUMN_LIST]
         user_feature_col = [b+"sum_user" for b in FEA_COLUMN_LIST]
         sample[feed_feature_col] = sample[feed_feature_col].fillna(0.0)
@@ -207,23 +206,23 @@ def concat_sample(sample_arr, stage="offline_train"):
 
         sample[["authorid", "bgm_song_id", "bgm_singer_id"]] = \
             sample[["authorid", "bgm_song_id", "bgm_singer_id"]].astype(int)
-        file_name = os.path.join(ROOT_PATH, stage, stage + "_" + action + "_" + str(day) + "_concate_sample.csv")
+        file_name = os.path.join(ROOT_PATH, stage, stage + "_" + action + "_" + str(day) + "_concate_sample.csv") # 每个阶段有自己的数据
         print('Save to: %s'%file_name)
         sample[features].to_csv(file_name, index=False)
 
 
 def main():
     t = time.time()
-    statis_data()
+    statis_data() # describe和字段的unique
     logger.info('Create dir and check file')
-    create_dir()
-    flag, not_exists_file = check_file()
+    create_dir() # 提前计算好目录
+    flag, not_exists_file = check_file() # 文件校验，这个是比较关键的，避免后面读取的时候报错
     if not flag:
         print("请检查目录中是否存在下列文件: ", ",".join(not_exists_file))
         return
     logger.info('Generate statistic feature')
-    statis_feature()
-    for stage in STAGE_END_DAY:
+    statis_feature() # 对userId、feedid进行聚合计算
+    for stage in STAGE_END_DAY: # 遍历不同阶段的日期生成样本
         logger.info("Stage: %s"%stage)
         logger.info('Generate sample')
         sample_arr = generate_sample(stage)
