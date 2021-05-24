@@ -177,6 +177,15 @@ def score(result_data, label_data, mode="初赛"):
         logger.error(res)
     return res
 
+def evaluate_deepctr(val_labels,val_pred_ans,userid_list,target):
+    eval_dict = {}
+    for i, action in enumerate(target):
+        eval_dict[action] = uAUC(val_labels[i], val_pred_ans[i], userid_list)
+    print(eval_dict)
+    weight_dict = {"read_comment": 4, "like": 3, "click_avatar": 2, "favorite": 1, "forward": 1,
+                   "comment": 1, "follow": 1}
+    weight_auc = compute_weighted_score(eval_dict, weight_dict)
+    print("Weighted uAUC: ", weight_auc)
     
 if __name__ == '__main__':
     t = time.time()
